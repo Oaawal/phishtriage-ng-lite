@@ -10,16 +10,166 @@ import joblib
 import pandas as pd
 import streamlit as st
 
-st.set_page_config(page_title="PhishTriage NG Lite", layout="centered")
 
-# ---------------- Model loading ----------------
+# =========================
+# Brand + Global UI Styling
+# =========================
+APP_NAME = "PhishTriage NG Lite"
+BRAND_NAME = "AWAL Global Consults"
+TAGLINE = "Governance | Risk | Compliance"
+
+# Brand colors (approx from your logo)
+BRAND_GOLD = "#B08D57"
+BRAND_NAVY = "#0B1F2A"
+BG_LIGHT = "#F5F7FB"
+CARD_BG = "#FFFFFF"
+TEXT_DARK = "#0F172A"
+MUTED = "#6B7280"
+
+st.set_page_config(page_title=APP_NAME, layout="wide")
+
+st.markdown(
+    f"""
+<style>
+/* App background */
+.stApp {{
+  background: {BG_LIGHT};
+}}
+
+/* Container spacing */
+.block-container {{
+  padding-top: 1.1rem;
+  padding-bottom: 2rem;
+}}
+
+/* Typography helpers */
+.muted {{ color: {MUTED}; font-size: 0.92rem; }}
+.small {{ color: {MUTED}; font-size: 0.85rem; }}
+
+/* Header */
+.header-wrap {{
+  border: 1px solid #e5e7eb;
+  background: {CARD_BG};
+  border-radius: 16px;
+  padding: 14px 16px;
+  margin-bottom: 0.9rem;
+}}
+.header-title {{
+  font-size: 1.65rem;
+  font-weight: 900;
+  color: {TEXT_DARK};
+  line-height: 1.1;
+}}
+.header-sub {{
+  font-size: 0.92rem;
+  color: {MUTED};
+  margin-top: 0.2rem;
+}}
+.header-page {{
+  display: inline-block;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-weight: 800;
+  font-size: 0.78rem;
+  background: rgba(176,141,87,0.12);
+  color: {BRAND_GOLD};
+  border: 1px solid rgba(176,141,87,0.35);
+  margin-top: 0.35rem;
+}}
+
+/* Cards */
+.card {{
+  border: 1px solid #e5e7eb;
+  border-radius: 16px;
+  padding: 14px;
+  background: {CARD_BG};
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.06);
+}}
+
+/* Badges */
+.badge {{
+  display:inline-block;
+  padding:6px 12px;
+  border-radius:999px;
+  font-weight:900;
+  color:white;
+  font-size:0.85rem;
+  letter-spacing:0.4px;
+}}
+.badge-low {{ background:#16a34a; }}
+.badge-medium {{ background:#f59e0b; }}
+.badge-high {{ background:#dc2626; }}
+
+/* Buttons */
+div.stButton > button {{
+  border-radius: 12px !important;
+  padding: 0.55rem 0.9rem !important;
+  border: 1px solid #d1d5db !important;
+}}
+/* Try to style the first button as brand primary in most cases */
+div.stButton > button:has(span:contains("Analyze")) {{
+  background: {BRAND_GOLD} !important;
+  border-color: {BRAND_GOLD} !important;
+  color: white !important;
+  font-weight: 800 !important;
+}}
+
+/* Tables header */
+thead tr th {{
+  background: #f9fafb !important;
+}}
+</style>
+""",
+    unsafe_allow_html=True,
+)
+
+
+def risk_badge(risk: str) -> str:
+    cls = "badge-low" if risk == "Low" else "badge-medium" if risk == "Medium" else "badge-high"
+    return f'<span class="badge {cls}">{risk.upper()} RISK</span>'
+
+
+def render_header(page_name: str):
+    """Brand header shown on every page."""
+    left, right = st.columns([1, 4], vertical_alignment="center")
+
+    with left:
+        # Logo (optional)
+        logo_path = "assets/awal_logo.jpg"
+        if os.path.exists(logo_path):
+            st.image(logo_path, use_container_width=True)
+        else:
+            st.markdown(
+                f"<div class='card'><b style='color:{BRAND_GOLD}'>AWAL</b><br><span class='small'>Logo missing</span></div>",
+                unsafe_allow_html=True,
+            )
+
+    with right:
+        st.markdown(
+            f"""
+<div class="header-wrap">
+  <div class="header-title">{APP_NAME}</div>
+  <div class="header-sub">{BRAND_NAME} — {TAGLINE}</div>
+  <div class="header-page">{page_name}</div>
+</div>
+""",
+            unsafe_allow_html=True,
+        )
+
+
+# =========================
+# Model loading
+# =========================
 @st.cache_resource
 def load_model():
     return joblib.load("model.joblib")
 
+
 model = load_model()
 
-# ---------------- Nigeria-focused categories ----------------
+# =========================
+# Detection logic
+# =========================
 CATEGORIES = {
     "Bank/Fintech OTP Scam": [
         "otp", "one time password", "token", "pin", "verify your account",
@@ -45,12 +195,10 @@ CATEGORIES = {
     ],
 }
 
-# Removed normal words like "today" to reduce false positives
 URGENCY_WORDS = ["urgent", "immediately", "now", "last warning", "final", "act fast", "limited time", "within 24 hours"]
 CREDENTIAL_WORDS = ["otp", "pin", "password", "token", "verification code"]
 MONEY_WORDS = ["pay", "payment", "transfer", "send", "fee", "charge", "deposit", "refund", "cash", "subscription"]
 
-# ---------------- SIEM-style detection rules (Sigma-like) ----------------
 SIEM_RULES = [
     {
         "id": "NG-SIEM-001",
@@ -105,7 +253,7 @@ SIEM_RULES = [
 SIEM_SEV_RANK = {"Low": 0, "Medium": 1, "High": 2}
 
 def siem_run_rules(text: str, urls, phones):
-    t = text.lower()
+    t = (text or "").lower()
     matches = []
     for r in SIEM_RULES:
         try:
@@ -115,7 +263,7 @@ def siem_run_rules(text: str, urls, phones):
                     "name": r["name"],
                     "severity": r["severity"],
                     "mitre": r.get("mitre", ""),
-                    "why": r["why"]
+                    "why": r["why"],
                 })
         except Exception:
             continue
@@ -127,12 +275,10 @@ def siem_run_rules(text: str, urls, phones):
 
     return siem_risk, matches
 
-# ---------------- IOC regex ----------------
 URL_REGEX = r"(?i)\b((?:https?://|www\.)[^\s]+)"
 PHONE_REGEX = r"(?i)(\+234\d{10}|\b0\d{10}\b)"
 ACCT_REGEX = r"(?i)\b\d{10}\b"
 
-# ---------------- Risk helpers ----------------
 RISK_RANK = {"Low": 0, "Medium": 1, "High": 2}
 
 def max_risk(a: str, b: str) -> str:
@@ -146,49 +292,42 @@ def score_to_risk(prob_spam: float):
     return "Low"
 
 def defang(url: str) -> str:
-    u = url.strip()
+    u = (url or "").strip()
     u = re.sub(r"(?i)^https?://", "hxxp://", u)
     if u.lower().startswith("www."):
         u = "hxxp://" + u
     return u
 
 def extract_iocs(text: str):
-    urls = re.findall(URL_REGEX, text)
-    phones = re.findall(PHONE_REGEX, text)
-    accts = re.findall(ACCT_REGEX, text)
+    urls = re.findall(URL_REGEX, text or "")
+    phones = re.findall(PHONE_REGEX, text or "")
+    accts = re.findall(ACCT_REGEX, text or "")
     urls = [defang(u) for u in urls]
     return sorted(set(urls)), sorted(set(phones)), sorted(set(accts))
 
 def categorize(text: str):
-    t = text.lower()
+    t = (text or "").lower()
     for cat, kws in CATEGORIES.items():
         if any(kw in t for kw in kws):
             return cat
     return "General Suspicious Message"
 
 def red_flags(text: str, urls, phones):
-    t = text.lower()
+    t = (text or "").lower()
     flags = []
-
     if any(w in t for w in URGENCY_WORDS):
         flags.append("Uses urgency/pressure tactics (e.g., 'urgent', 'immediately').")
-
     if any(w in t for w in CREDENTIAL_WORDS):
         flags.append("Asks for sensitive credentials (OTP/PIN/password). Legit services never request OTP via chat.")
-
     if any(w in t for w in MONEY_WORDS):
         flags.append("Mentions payments/fees/transfers—common in scams.")
-
     if urls:
         flags.append("Contains a link. Scams often use links to steal login details or install malware.")
-
     if phones:
         flags.append("Provides a phone number to move conversation off-platform (common social-engineering tactic).")
-
     if "click" in t or "tap" in t:
         flags.append("Prompts you to click/tap quickly (possible phishing).")
-
-    return flags[:8] if flags else ["No obvious red flags found, but always verify via official channels."]
+    return flags[:10] if flags else ["No obvious red flags found, but always verify via official channels."]
 
 def advice(risk_level: str, category: str):
     base = [
@@ -198,16 +337,15 @@ def advice(risk_level: str, category: str):
     ]
     if risk_level in ("High", "Medium"):
         base += [
-            "If you already clicked a link, change passwords and enable 2FA on your important accounts.",
+            "If you already clicked a link, change passwords and enable 2FA on important accounts.",
             "Block/report the sender on the platform.",
         ]
     if "OTP" in category:
         base += ["Contact your bank/fintech via official channels if you suspect compromise."]
-    return base[:7]
+    return base[:8]
 
 def rule_based_risk(text: str, urls, phones) -> str:
-    t = text.lower()
-
+    t = (text or "").lower()
     if any(x in t for x in ["otp", "pin", "password", "token", "verification code"]):
         return "High"
 
@@ -259,18 +397,14 @@ def dns_txt_records(domain: str):
 
 def check_spf_dmarc_presence(from_domain: str) -> dict:
     result = {"spf_present": False, "dmarc_present": False}
-
     txt = dns_txt_records(from_domain)
     result["spf_present"] = any("v=spf1" in t.lower() for t in txt)
-
     dmarc_txt = dns_txt_records(f"_dmarc.{from_domain}")
     result["dmarc_present"] = any("v=dmarc1" in t.lower() for t in dmarc_txt)
-
     return result
 
 def email_auth_checks(from_addr: str, reply_to: str, expected_domain: str, headers_text: str):
     checks = []
-
     from_domain = extract_domain_from_email(from_addr)
     reply_domain = extract_domain_from_email(reply_to)
 
@@ -285,7 +419,7 @@ def email_auth_checks(from_addr: str, reply_to: str, expected_domain: str, heade
         checks.append({
             "check": "SPF/DKIM/DMARC results",
             "status": "WARN",
-            "detail": "No Authentication-Results found. Paste email headers for stronger verification."
+            "detail": "No Authentication-Results found. Paste email headers for stronger verification.",
         })
 
     if reply_to and from_domain and reply_domain:
@@ -293,13 +427,13 @@ def email_auth_checks(from_addr: str, reply_to: str, expected_domain: str, heade
             checks.append({
                 "check": "Reply-To domain mismatch",
                 "status": "FAIL",
-                "detail": f"From domain is {from_domain} but Reply-To domain is {reply_domain}."
+                "detail": f"From domain is {from_domain} but Reply-To domain is {reply_domain}.",
             })
         else:
             checks.append({
                 "check": "Reply-To alignment",
                 "status": "PASS",
-                "detail": "Reply-To domain matches From domain."
+                "detail": "Reply-To domain matches From domain.",
             })
 
     if expected_domain:
@@ -308,7 +442,7 @@ def email_auth_checks(from_addr: str, reply_to: str, expected_domain: str, heade
             checks.append({
                 "check": "Expected sender domain match",
                 "status": "PASS",
-                "detail": f"From domain matches expected domain: {exp}"
+                "detail": f"From domain matches expected domain: {exp}",
             })
         else:
             similarity = difflib.SequenceMatcher(None, from_domain, exp).ratio() if from_domain and exp else 0
@@ -316,7 +450,7 @@ def email_auth_checks(from_addr: str, reply_to: str, expected_domain: str, heade
             checks.append({
                 "check": "Expected sender domain mismatch",
                 "status": status,
-                "detail": f"From domain ({from_domain}) != expected ({exp}). Similarity={similarity:.2f}"
+                "detail": f"From domain ({from_domain}) != expected ({exp}). Similarity={similarity:.2f}",
             })
 
     if from_domain:
@@ -324,15 +458,26 @@ def email_auth_checks(from_addr: str, reply_to: str, expected_domain: str, heade
         checks.append({
             "check": "SPF record present (DNS)",
             "status": "PASS" if dns_presence["spf_present"] else "WARN",
-            "detail": "SPF TXT record found." if dns_presence["spf_present"] else "No SPF TXT record found."
+            "detail": "SPF TXT record found." if dns_presence["spf_present"] else "No SPF TXT record found.",
         })
         checks.append({
             "check": "DMARC record present (DNS)",
             "status": "PASS" if dns_presence["dmarc_present"] else "WARN",
-            "detail": "DMARC TXT record found." if dns_presence["dmarc_present"] else "No DMARC TXT record found."
+            "detail": "DMARC TXT record found." if dns_presence["dmarc_present"] else "No DMARC TXT record found.",
         })
 
     return checks
+
+def email_verdict(email_checks):
+    if not email_checks:
+        return "WARN"
+    fails = sum(1 for c in email_checks if c["status"] == "FAIL")
+    passes = sum(1 for c in email_checks if c["status"] == "PASS")
+    if fails >= 1:
+        return "FAIL"
+    if passes >= 2:
+        return "PASS"
+    return "WARN"
 
 # ---------------- Core analysis ----------------
 def analyze_message(msg: str) -> dict:
@@ -380,7 +525,7 @@ def build_report(res: dict, email_checks=None) -> str:
     if email_checks:
         email_lines = "\n".join([f"- {c['status']} — {c['check']}: {c['detail']}" for c in email_checks])
 
-    return f"""PhishTriage NG Lite — Case Note
+    return f"""{APP_NAME} — Case Note
 Time: {res["time"]}
 
 Input Message:
@@ -413,7 +558,7 @@ Matched SIEM Rules:
 
 Tool Disclosure:
 - AI: TF-IDF + Logistic Regression (offline, scikit-learn)
-- SIEM rules: Sigma-like keyword rules + MITRE mapping
+- SIEM rules: Sigma-like rules + MITRE mapping
 - App: Streamlit (Python)
 """
 
@@ -434,7 +579,7 @@ def save_case(res: dict):
         "urls": " | ".join(res["urls"]) if res["urls"] else "",
         "phones": " | ".join(res["phones"]) if res["phones"] else "",
         "accounts": " | ".join(res["accts"]) if res["accts"] else "",
-        "message": res["message"].replace("\n", " ").strip()
+        "message": res["message"].replace("\n", " ").strip(),
     }
 
     with open(CASES_FILE, "a", newline="", encoding="utf-8") as f:
@@ -443,12 +588,57 @@ def save_case(res: dict):
             writer.writeheader()
         writer.writerow(row)
 
-# ---------------- UI ----------------
+# =========================
+# Sidebar + demo samples
+# =========================
 page = st.sidebar.radio("Menu", ["Single Check", "Batch Check", "Dashboard", "About"])
 
+with st.sidebar.expander("Quick demo samples", expanded=False):
+    st.caption("Loads safe sample text (no real data).")
+
+    def load_sms_legit():
+        st.session_state["input_type"] = "SMS/WhatsApp"
+        st.session_state["single_msg"] = "Hi, please are we still meeting by 4pm today? Call me when you’re close."
+
+    def load_sms_otp():
+        st.session_state["input_type"] = "SMS/WhatsApp"
+        st.session_state["single_msg"] = (
+            "URGENT: Your bank account will be blocked immediately. "
+            "Verify now at www.bank-secure-login.com and send your OTP to confirm."
+        )
+
+    def load_sms_nin():
+        st.session_state["input_type"] = "SMS/WhatsApp"
+        st.session_state["single_msg"] = (
+            "CBN/NIN UPDATE: Complete verification immediately to avoid arrest/fine. "
+            "Click https://bit.ly/nin-update-now"
+        )
+
+    def load_email_phish():
+        st.session_state["input_type"] = "Email"
+        st.session_state["email_from"] = "IT Helpdesk <it-helpdesk@yourc0mpany.com>"
+        st.session_state["email_reply_to"] = "passwordreset@gmail.com"
+        st.session_state["email_subject"] = "Action required: Password expires immediately"
+        st.session_state["email_body"] = "Your mailbox will be deactivated within 24 hours. Click http://bit.ly/reset-now to keep access."
+        st.session_state["email_headers"] = "Authentication-Results: spf=fail dkim=fail dmarc=fail"
+        st.session_state["expected_domain"] = "yourcompany.com"
+
+    st.button("Load SMS (Legit)", on_click=load_sms_legit)
+    st.button("Load SMS (OTP Scam)", on_click=load_sms_otp)
+    st.button("Load SMS (NIN/CBN Scam)", on_click=load_sms_nin)
+    st.button("Load Email (Phishing)", on_click=load_email_phish)
+
+# =========================
+# Pages
+# =========================
 if page == "Single Check":
-    st.title("PhishTriage NG Lite")
-    st.caption("Digital Inclusion project: scam/phishing checker for SMS/WhatsApp + Email triage (AI + SIEM rules + IOC extraction).")
+    render_header("Single Check")
+
+    st.info(
+        "How it works: **Paste** message/email → **Analyze** → Get **risk**, **IOCs**, **SIEM detections**, and **safe actions**. "
+        "Avoid pasting real OTPs/passwords.",
+        icon="ℹ️",
+    )
 
     input_type = st.selectbox("Input type", ["SMS/WhatsApp", "Email"], key="input_type")
 
@@ -457,6 +647,7 @@ if page == "Single Check":
     email_reply_to = ""
     expected_domain = ""
     email_checks = None
+    combined_msg = ""
 
     if input_type == "SMS/WhatsApp":
         msg = st.text_area(
@@ -470,7 +661,7 @@ if page == "Single Check":
         email_from = st.text_input("From (optional):", key="email_from")
         email_reply_to = st.text_input("Reply-To (optional):", key="email_reply_to")
         email_subject = st.text_input("Subject (optional):", key="email_subject")
-        email_body = st.text_area("Email body:", height=180, key="email_body")
+        email_body = st.text_area("Email body:", height=160, key="email_body")
 
         headers_text = st.text_area(
             "Email headers (recommended for verification):",
@@ -492,7 +683,7 @@ if page == "Single Check":
             f"Headers:\n{headers_text}"
         )
 
-    def clear_single_msg():
+    def clear_single_inputs():
         st.session_state["single_msg"] = ""
         st.session_state["email_from"] = ""
         st.session_state["email_reply_to"] = ""
@@ -501,81 +692,142 @@ if page == "Single Check":
         st.session_state["email_headers"] = ""
         st.session_state["expected_domain"] = ""
 
-    col1, col2 = st.columns([1, 1])
+    col1, col2, col3 = st.columns([1, 1, 2])
     analyze = col1.button("Analyze", type="primary")
-    col2.button("Clear", on_click=clear_single_msg)
+    col2.button("Clear", on_click=clear_single_inputs)
 
     if analyze:
         if not combined_msg.strip():
-            st.warning("Please paste a message to analyze.")
+            st.warning("Please paste a message/email to analyze.")
             st.stop()
 
         res = analyze_message(combined_msg)
+        if input_type == "Email":
+            email_checks = email_auth_checks(email_from, email_reply_to, expected_domain, headers_text)
+
+        st.markdown("<div class='card'>", unsafe_allow_html=True)
+        top_left, top_right = st.columns([2, 1], vertical_alignment="center")
+
+        with top_left:
+            st.markdown(risk_badge(res["risk"]), unsafe_allow_html=True)
+            st.markdown(f"**Category:** {res['category']}")
+            st.markdown(f"<span class='small'>Time: {res['time']}</span>", unsafe_allow_html=True)
+
+        with top_right:
+            st.markdown("**AI spam probability**")
+            st.progress(min(max(res["ai_prob"], 0.0), 1.0))
+            st.markdown(f"<span class='small'>{res['ai_prob']:.2f}</span>", unsafe_allow_html=True)
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Risk", res["risk"])
+        c2.metric("AI Risk", res["ai_risk"])
+        c3.metric("Rule Risk", res["rule_risk"])
+        c4.metric("SIEM Risk", res["siem_risk"])
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        tabs = ["Summary", "IOCs", "SIEM Rules", "Red Flags & Actions", "Report"]
+        if input_type == "Email":
+            tabs.insert(2, "Email Verification")
+
+        tab_objs = st.tabs(tabs)
+        tab_map = {name: tab_objs[i] for i, name in enumerate(tabs)}
+
+        with tab_map["Summary"]:
+            st.subheader("Triage Summary")
+            st.write(
+                f"- **Risk:** {res['risk']}\n"
+                f"- **Category:** {res['category']}\n"
+                f"- **IOCs found:** {len(res['urls']) + len(res['phones']) + len(res['accts'])}\n"
+                f"- **Matched SIEM rules:** {len(res['siem_matches'])}"
+            )
+            with st.expander("Message preview", expanded=False):
+                st.code(res["message"])
+
+        with tab_map["IOCs"]:
+            st.subheader("Indicators of Compromise (IOCs)")
+            a, b = st.columns(2)
+            with a:
+                st.markdown("**URLs**")
+                if res["urls"]:
+                    for u in res["urls"]:
+                        st.code(u)
+                else:
+                    st.write("None detected")
+            with b:
+                st.markdown("**Phone numbers**")
+                st.write(res["phones"] if res["phones"] else "None detected")
+
+            st.markdown("**Possible account numbers (10 digits)**")
+            st.write(res["accts"] if res["accts"] else "None detected")
 
         if input_type == "Email":
-            st.subheader("Email authenticity checks (verification signals)")
-            email_checks = email_auth_checks(email_from, email_reply_to, expected_domain, headers_text)
-            for c in email_checks:
-                st.write(f"- **{c['status']}** — {c['check']}: {c['detail']}")
+            with tab_map["Email Verification"]:
+                st.subheader("Email authenticity checks (verification signals)")
+                verdict = email_verdict(email_checks)
+                badge_cls = "badge-low" if verdict == "PASS" else "badge-medium" if verdict == "WARN" else "badge-high"
+                st.markdown(f'<span class="badge {badge_cls}">{verdict} (SIGNALS)</span>', unsafe_allow_html=True)
+                st.caption("These are verification signals to support triage. Paste headers to improve confidence.")
+                df_checks = pd.DataFrame(email_checks) if email_checks else pd.DataFrame(columns=["check", "status", "detail"])
+                st.dataframe(df_checks, use_container_width=True)
 
-        st.subheader("Result")
-        st.write(f"**Risk level:** {res['risk']}")
-        st.write(f"**Spam probability (AI):** {res['ai_prob']:.2f}")
-        st.write(f"**AI risk:** {res['ai_risk']}")
-        st.write(f"**Rule-based risk:** {res['rule_risk']}")
-        st.write(f"**SIEM rule risk:** {res['siem_risk']}")
-        st.write(f"**Category (Nigeria-focused):** {res['category']}")
+        with tab_map["SIEM Rules"]:
+            st.subheader("Matched SIEM Detection Rules")
+            if res["siem_matches"]:
+                st.dataframe(pd.DataFrame(res["siem_matches"]), use_container_width=True)
+            else:
+                st.write("No SIEM rules matched.")
 
-        st.subheader("Indicators of Compromise (IOCs)")
-        st.write("**URLs:**", res["urls"] if res["urls"] else "None detected")
-        st.write("**Phone numbers:**", res["phones"] if res["phones"] else "None detected")
-        st.write("**Possible account numbers (10 digits):**", res["accts"] if res["accts"] else "None detected")
+        with tab_map["Red Flags & Actions"]:
+            st.subheader("Analyst Explanations + Safe Actions")
+            with st.expander("Red flags", expanded=True):
+                for f in res["flags"]:
+                    st.write(f"- {f}")
 
-        st.subheader("Red flags (explanations)")
-        for f in res["flags"]:
-            st.write(f"- {f}")
+            with st.expander("Recommended safe actions", expanded=True):
+                for a in res["actions"]:
+                    st.write(f"- {a}")
 
-        st.subheader("Recommended safe actions")
-        for a in res["actions"]:
-            st.write(f"- {a}")
+            with st.expander("SOC playbook (short)", expanded=False):
+                st.write(
+                    "**Containment:** Block sender/URL; warn user(s); isolate device if link clicked.\n\n"
+                    "**Eradication:** Change passwords; revoke sessions; enable MFA.\n\n"
+                    "**Recovery:** Monitor accounts; educate users; update blocklists.\n\n"
+                    "**Reporting:** Escalate high risk cases to IT/SOC with IOCs and screenshots."
+                )
 
-        report = build_report(res, email_checks=email_checks)
+        with tab_map["Report"]:
+            st.subheader("Case Note + Export")
+            report = build_report(res, email_checks=email_checks)
 
-        c1, c2 = st.columns([1, 1])
-        with c1:
-            st.download_button(
-                label="Download Report (.txt)",
-                data=report.encode("utf-8"),
-                file_name="phishtriage_case_note.txt",
-                mime="text/plain"
-            )
-        with c2:
-            if st.button("Save Case"):
-                save_case(res)
-                st.success("Saved to cases.csv")
+            r1, r2 = st.columns([1, 1])
+            with r1:
+                st.download_button(
+                    label="Download Report (.txt)",
+                    data=report.encode("utf-8"),
+                    file_name="phishtriage_case_note.txt",
+                    mime="text/plain"
+                )
+            with r2:
+                if st.button("Save Case (local CSV)"):
+                    save_case(res)
+                    st.success("Saved to cases.csv (cloud storage may reset on free hosting).")
 
-        st.subheader("Matched SIEM Detection Rules")
-        if res["siem_matches"]:
-            for m in res["siem_matches"]:
-                st.write(f"- **{m['severity']}** | {m['id']} — {m['name']} ({m['mitre']})")
-                st.write(f"  - Why: {m['why']}")
-        else:
-            st.write("No SIEM rules matched.")
+            with st.expander("Preview report", expanded=False):
+                st.code(report)
 
 elif page == "Batch Check":
-    st.title("Batch Check (SOC-style triage)")
-    st.caption("Paste multiple messages (one per block). The app will analyze each and output a table.")
+    render_header("Batch Check")
 
+    st.caption("Paste multiple messages. Separate each message with a blank line.")
     batch = st.text_area(
-        "Paste messages (separate messages with a blank line):",
-        height=220,
+        "Batch input:",
+        height=240,
         key="batch_msg",
         placeholder="Message 1...\n\nMessage 2...\n\nMessage 3..."
     )
 
     if st.button("Run Batch Analysis", type="primary"):
         blocks = [b.strip() for b in re.split(r"\n\s*\n", batch) if b.strip()]
-
         if not blocks:
             st.warning("Paste at least one message first.")
             st.stop()
@@ -593,7 +845,7 @@ elif page == "Batch Check":
                 "category": r["category"],
                 "urls": " | ".join(r["urls"]) if r["urls"] else "",
                 "phones": " | ".join(r["phones"]) if r["phones"] else "",
-                "message": (r["message"][:80] + "...") if len(r["message"]) > 80 else r["message"]
+                "message": (r["message"][:90] + "...") if len(r["message"]) > 90 else r["message"],
             })
 
         df = pd.DataFrame(results)
@@ -607,28 +859,22 @@ elif page == "Batch Check":
             mime="text/csv"
         )
 
-        if st.button("Save ALL as Cases"):
-            for b in blocks:
-                save_case(analyze_message(b))
-            st.success("All batch items saved to cases.csv")
-
 elif page == "Dashboard":
-    st.title("Dashboard")
-    st.caption("Shows saved triage cases (stored locally in cases.csv). Note: cloud storage can reset on free hosting.")
+    render_header("Dashboard")
+
+    st.caption("Saved cases from cases.csv (note: Streamlit Cloud storage can reset).")
 
     if not os.path.exists(CASES_FILE):
-        st.info("No saved cases yet. Go to 'Single Check' or 'Batch Check' and save cases.")
+        st.info("No saved cases yet. Go to 'Single Check' and click 'Save Case'.")
         st.stop()
 
     df = pd.read_csv(CASES_FILE)
 
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric("Total Cases", len(df))
-    c2.metric("High Risk", int((df["risk"] == "High").sum()))
-    c3.metric("Medium Risk", int((df["risk"] == "Medium").sum()))
-
-    st.subheader("Recent Cases")
-    st.dataframe(df.tail(20), use_container_width=True)
+    c2.metric("High", int((df["risk"] == "High").sum()))
+    c3.metric("Medium", int((df["risk"] == "Medium").sum()))
+    c4.metric("Low", int((df["risk"] == "Low").sum()))
 
     st.subheader("Cases by Risk")
     st.bar_chart(df["risk"].value_counts())
@@ -636,20 +882,33 @@ elif page == "Dashboard":
     st.subheader("Cases by Category")
     st.bar_chart(df["category"].value_counts())
 
-elif page == "About":
-    st.title("About")
-    st.write("""
-**PhishTriage NG Lite** is a Digital Inclusion-focused tool that helps users and SOC beginners triage suspicious SMS/WhatsApp messages and phishing emails.
+    st.subheader("Recent Cases")
+    st.dataframe(df.tail(30), use_container_width=True)
 
-**Key Features**
-- Offline AI spam probability (TF-IDF + Logistic Regression)
-- Nigeria-focused scam categories (CBN/NIN, OTP scams, job scams, etc.)
-- SIEM-style detection rules (Sigma-like) + MITRE T1566 mapping
+    st.download_button(
+        "Download cases.csv",
+        data=df.to_csv(index=False).encode("utf-8"),
+        file_name="cases.csv",
+        mime="text/csv"
+    )
+
+elif page == "About":
+    render_header("About")
+
+    st.write(f"""
+**{APP_NAME}** is a Digital Inclusion-focused tool built to help users and SOC beginners triage suspicious SMS/WhatsApp messages and phishing emails.
+
+**What makes it stand out**
+- Offline AI spam probability (TF‑IDF + Logistic Regression)
+- Nigeria-focused scam categories (OTP, NIN/CBN/EFCC, job scams, dispatch scams)
+- SIEM-style detections (Sigma-like rules) + MITRE T1566 mapping
 - IOC extraction (URLs, phone numbers, account patterns)
-- Email verification signals: SPF/DKIM/DMARC (from headers), domain alignment checks, DNS presence of SPF/DMARC
-- Downloadable case note report (.txt)
-- Batch triage + case logging + dashboard
+- Email verification signals: SPF/DKIM/DMARC from headers, Reply‑To mismatch, expected domain check, DNS SPF/DMARC presence
+- Downloadable SOC case note + batch triage + dashboard
+
+**Live Demo**
+- {st.session_state.get("live_url", "https://phishtriage-ng-lite-oaawal.streamlit.app")}
 
 **Privacy**
-Avoid pasting real OTPs, bank details, or highly sensitive personal data.
+Avoid pasting real OTPs, passwords, or highly sensitive personal data.
 """)
