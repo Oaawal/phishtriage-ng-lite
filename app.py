@@ -1,6 +1,7 @@
 import re
 import os
 import csv
+from pathlib import Path
 from datetime import datetime
 from email.utils import parseaddr
 import difflib
@@ -12,15 +13,14 @@ import streamlit as st
 
 
 # =========================
-# Brand + Global UI Styling
+# Brand configuration
 # =========================
 APP_NAME = "PhishTriage NG Lite"
 BRAND_NAME = "AWAL Global Consults"
 TAGLINE = "Governance | Risk | Compliance"
 
-# Brand colors (approx from your logo)
+# Brand colors (approx)
 BRAND_GOLD = "#B08D57"
-BRAND_NAVY = "#0B1F2A"
 BG_LIGHT = "#F5F7FB"
 CARD_BG = "#FFFFFF"
 TEXT_DARK = "#0F172A"
@@ -35,14 +35,10 @@ st.markdown(
 .stApp {{
   background: {BG_LIGHT};
 }}
-
-/* Container spacing */
 .block-container {{
   padding-top: 1.1rem;
   padding-bottom: 2rem;
 }}
-
-/* Typography helpers */
 .muted {{ color: {MUTED}; font-size: 0.92rem; }}
 .small {{ color: {MUTED}; font-size: 0.85rem; }}
 
@@ -53,6 +49,7 @@ st.markdown(
   border-radius: 16px;
   padding: 14px 16px;
   margin-bottom: 0.9rem;
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.06);
 }}
 .header-title {{
   font-size: 1.65rem;
@@ -100,20 +97,13 @@ st.markdown(
 .badge-medium {{ background:#f59e0b; }}
 .badge-high {{ background:#dc2626; }}
 
-/* Buttons */
+/* Buttons (subtle) */
 div.stButton > button {{
   border-radius: 12px !important;
   padding: 0.55rem 0.9rem !important;
   border: 1px solid #d1d5db !important;
+  font-weight: 700 !important;
 }}
-/* Try to style the first button as brand primary in most cases */
-div.stButton > button:has(span:contains("Analyze")) {{
-  background: {BRAND_GOLD} !important;
-  border-color: {BRAND_GOLD} !important;
-  color: white !important;
-  font-weight: 800 !important;
-}}
-
 /* Tables header */
 thead tr th {{
   background: #f9fafb !important;
@@ -129,14 +119,38 @@ def risk_badge(risk: str) -> str:
     return f'<span class="badge {cls}">{risk.upper()} RISK</span>'
 
 
+def get_logo_path() -> str | None:
+    """
+    Auto-detects the logo file in assets folder.
+    Works with your assets/awal_logo.jpeg.
+    """
+    candidates = [
+        "awal_logo.jpeg", "awal_logo.jpg", "awal_logo.png", "awal_logo.webp",
+        "AWAL_logo.jpeg", "AWAL_logo.jpg", "AWAL_logo.png", "AWAL_logo.webp",
+    ]
+    for name in candidates:
+        p = Path("assets") / name
+        if p.exists():
+            return str(p)
+
+    # fallback: any image in assets folder
+    assets_dir = Path("assets")
+    if assets_dir.exists():
+        for ext in ("png", "jpg", "jpeg", "webp"):
+            found = list(assets_dir.glob(f"*.{ext}"))
+            if found:
+                return str(found[0])
+
+    return None
+
+
 def render_header(page_name: str):
     """Brand header shown on every page."""
-    left, right = st.columns([1, 4], vertical_alignment="center")
+    left, right = st.columns([0.9, 4.1], vertical_alignment="center")
 
     with left:
-        # Logo (optional)
-        logo_path = "assets/awal_logo.jpg"
-        if os.path.exists(logo_path):
+        logo_path = get_logo_path()
+        if logo_path:
             st.image(logo_path, use_container_width=True)
         else:
             st.markdown(
@@ -158,7 +172,7 @@ def render_header(page_name: str):
 
 
 # =========================
-# Model loading
+# Load model
 # =========================
 @st.cache_resource
 def load_model():
@@ -195,6 +209,7 @@ CATEGORIES = {
     ],
 }
 
+# Keep urgency list strict to reduce false positives
 URGENCY_WORDS = ["urgent", "immediately", "now", "last warning", "final", "act fast", "limited time", "within 24 hours"]
 CREDENTIAL_WORDS = ["otp", "pin", "password", "token", "verification code"]
 MONEY_WORDS = ["pay", "payment", "transfer", "send", "fee", "charge", "deposit", "refund", "cash", "subscription"]
@@ -232,22 +247,6 @@ SIEM_RULES = [
         "match": lambda t, urls, phones: any(x in t for x in ["account will be blocked", "deactivated", "suspended", "restricted"]) and (len(urls) > 0 or "click" in t),
         "why": "Claims account shutdown and pushes link clicking/verification."
     },
-    {
-        "id": "NG-SIEM-005",
-        "name": "Fee/Payment Request Pattern",
-        "severity": "Medium",
-        "mitre": "T1566 (Phishing)",
-        "match": lambda t, urls, phones: any(x in t for x in ["pay", "fee", "charge", "subscription", "deposit"]) and any(w in t for w in URGENCY_WORDS),
-        "why": "Requests payment/fee with urgency—often scam pressure tactics."
-    },
-    {
-        "id": "NG-SIEM-006",
-        "name": "Delivery/Dispatch Fee Scam Pattern",
-        "severity": "Medium",
-        "mitre": "T1566 (Phishing)",
-        "match": lambda t, urls, phones: any(x in t for x in ["dispatch", "delivery", "parcel", "package", "rider"]) and any(x in t for x in ["fee", "pay", "release"]),
-        "why": "Delivery/dispatch theme combined with fee/release language."
-    },
 ]
 
 SIEM_SEV_RANK = {"Low": 0, "Medium": 1, "High": 2}
@@ -274,6 +273,7 @@ def siem_run_rules(text: str, urls, phones):
             siem_risk = m["severity"]
 
     return siem_risk, matches
+
 
 URL_REGEX = r"(?i)\b((?:https?://|www\.)[^\s]+)"
 PHONE_REGEX = r"(?i)(\+234\d{10}|\b0\d{10}\b)"
@@ -367,7 +367,10 @@ def rule_based_risk(text: str, urls, phones) -> str:
         return "Medium"
     return "Low"
 
-# ---------------- Email verification helpers ----------------
+
+# =========================
+# Email verification signals
+# =========================
 def extract_domain_from_email(addr: str) -> str:
     _, email_addr = parseaddr(addr or "")
     if "@" in email_addr:
@@ -407,7 +410,6 @@ def email_auth_checks(from_addr: str, reply_to: str, expected_domain: str, heade
     checks = []
     from_domain = extract_domain_from_email(from_addr)
     reply_domain = extract_domain_from_email(reply_to)
-
     auth = parse_authentication_results(headers_text)
 
     if auth:
@@ -416,55 +418,34 @@ def email_auth_checks(from_addr: str, reply_to: str, expected_domain: str, heade
                 status = "PASS" if auth[k] == "pass" else ("WARN" if auth[k] in ["none", "neutral"] else "FAIL")
                 checks.append({"check": f"{k.upper()} result (from headers)", "status": status, "detail": f"{k}={auth[k]}"})
     else:
-        checks.append({
-            "check": "SPF/DKIM/DMARC results",
-            "status": "WARN",
-            "detail": "No Authentication-Results found. Paste email headers for stronger verification.",
-        })
+        checks.append({"check": "SPF/DKIM/DMARC results", "status": "WARN",
+                       "detail": "No Authentication-Results found. Paste email headers for stronger verification."})
 
     if reply_to and from_domain and reply_domain:
         if reply_domain != from_domain:
-            checks.append({
-                "check": "Reply-To domain mismatch",
-                "status": "FAIL",
-                "detail": f"From domain is {from_domain} but Reply-To domain is {reply_domain}.",
-            })
+            checks.append({"check": "Reply-To domain mismatch", "status": "FAIL",
+                           "detail": f"From domain is {from_domain} but Reply-To domain is {reply_domain}."})
         else:
-            checks.append({
-                "check": "Reply-To alignment",
-                "status": "PASS",
-                "detail": "Reply-To domain matches From domain.",
-            })
+            checks.append({"check": "Reply-To alignment", "status": "PASS",
+                           "detail": "Reply-To domain matches From domain."})
 
     if expected_domain:
         exp = expected_domain.lower().strip()
         if from_domain == exp:
-            checks.append({
-                "check": "Expected sender domain match",
-                "status": "PASS",
-                "detail": f"From domain matches expected domain: {exp}",
-            })
+            checks.append({"check": "Expected sender domain match", "status": "PASS",
+                           "detail": f"From domain matches expected domain: {exp}"})
         else:
             similarity = difflib.SequenceMatcher(None, from_domain, exp).ratio() if from_domain and exp else 0
             status = "FAIL" if similarity > 0.75 else "WARN"
-            checks.append({
-                "check": "Expected sender domain mismatch",
-                "status": status,
-                "detail": f"From domain ({from_domain}) != expected ({exp}). Similarity={similarity:.2f}",
-            })
+            checks.append({"check": "Expected sender domain mismatch", "status": status,
+                           "detail": f"From domain ({from_domain}) != expected ({exp}). Similarity={similarity:.2f}"})
 
     if from_domain:
         dns_presence = check_spf_dmarc_presence(from_domain)
-        checks.append({
-            "check": "SPF record present (DNS)",
-            "status": "PASS" if dns_presence["spf_present"] else "WARN",
-            "detail": "SPF TXT record found." if dns_presence["spf_present"] else "No SPF TXT record found.",
-        })
-        checks.append({
-            "check": "DMARC record present (DNS)",
-            "status": "PASS" if dns_presence["dmarc_present"] else "WARN",
-            "detail": "DMARC TXT record found." if dns_presence["dmarc_present"] else "No DMARC TXT record found.",
-        })
+        checks.append({"check": "SPF record present (DNS)", "status": "PASS" if dns_presence["spf_present"] else "WARN",
+                       "detail": "SPF TXT record found." if dns_presence["spf_present"] else "No SPF TXT record found."})
+        checks.append({"check": "DMARC record present (DNS)", "status": "PASS" if dns_presence["dmarc_present"] else "WARN",
+                       "detail": "DMARC TXT record found." if dns_presence["dmarc_present"] else "No DMARC TXT record found."})
 
     return checks
 
@@ -479,7 +460,10 @@ def email_verdict(email_checks):
         return "PASS"
     return "WARN"
 
-# ---------------- Core analysis ----------------
+
+# =========================
+# Core analysis + reporting
+# =========================
 def analyze_message(msg: str) -> dict:
     prob_spam = float(model.predict_proba([msg])[0][1])
     ai_risk = score_to_risk(prob_spam)
@@ -558,11 +542,10 @@ Matched SIEM Rules:
 
 Tool Disclosure:
 - AI: TF-IDF + Logistic Regression (offline, scikit-learn)
-- SIEM rules: Sigma-like rules + MITRE mapping
+- Email checks: SPF/DKIM/DMARC parsing + domain alignment + DNS SPF/DMARC presence
 - App: Streamlit (Python)
 """
 
-# ---------------- Case logging (CSV) ----------------
 CASES_FILE = "cases.csv"
 
 def save_case(res: dict):
@@ -587,6 +570,7 @@ def save_case(res: dict):
         if new_file:
             writer.writeheader()
         writer.writerow(row)
+
 
 # =========================
 # Sidebar + demo samples
@@ -628,6 +612,7 @@ with st.sidebar.expander("Quick demo samples", expanded=False):
     st.button("Load SMS (NIN/CBN Scam)", on_click=load_sms_nin)
     st.button("Load Email (Phishing)", on_click=load_email_phish)
 
+
 # =========================
 # Pages
 # =========================
@@ -635,7 +620,7 @@ if page == "Single Check":
     render_header("Single Check")
 
     st.info(
-        "How it works: **Paste** message/email → **Analyze** → Get **risk**, **IOCs**, **SIEM detections**, and **safe actions**. "
+        "How it works: Paste message/email → Analyze → Get risk, IOCs, SIEM detections, and safe actions. "
         "Avoid pasting real OTPs/passwords.",
         icon="ℹ️",
     )
@@ -683,7 +668,7 @@ if page == "Single Check":
             f"Headers:\n{headers_text}"
         )
 
-    def clear_single_inputs():
+    def clear_inputs():
         st.session_state["single_msg"] = ""
         st.session_state["email_from"] = ""
         st.session_state["email_reply_to"] = ""
@@ -692,9 +677,9 @@ if page == "Single Check":
         st.session_state["email_headers"] = ""
         st.session_state["expected_domain"] = ""
 
-    col1, col2, col3 = st.columns([1, 1, 2])
+    col1, col2 = st.columns([1, 1])
     analyze = col1.button("Analyze", type="primary")
-    col2.button("Clear", on_click=clear_single_inputs)
+    col2.button("Clear", on_click=clear_inputs)
 
     if analyze:
         if not combined_msg.strip():
@@ -707,12 +692,10 @@ if page == "Single Check":
 
         st.markdown("<div class='card'>", unsafe_allow_html=True)
         top_left, top_right = st.columns([2, 1], vertical_alignment="center")
-
         with top_left:
             st.markdown(risk_badge(res["risk"]), unsafe_allow_html=True)
             st.markdown(f"**Category:** {res['category']}")
             st.markdown(f"<span class='small'>Time: {res['time']}</span>", unsafe_allow_html=True)
-
         with top_right:
             st.markdown("**AI spam probability**")
             st.progress(min(max(res["ai_prob"], 0.0), 1.0))
@@ -767,8 +750,7 @@ if page == "Single Check":
                 badge_cls = "badge-low" if verdict == "PASS" else "badge-medium" if verdict == "WARN" else "badge-high"
                 st.markdown(f'<span class="badge {badge_cls}">{verdict} (SIGNALS)</span>', unsafe_allow_html=True)
                 st.caption("These are verification signals to support triage. Paste headers to improve confidence.")
-                df_checks = pd.DataFrame(email_checks) if email_checks else pd.DataFrame(columns=["check", "status", "detail"])
-                st.dataframe(df_checks, use_container_width=True)
+                st.dataframe(pd.DataFrame(email_checks) if email_checks else pd.DataFrame(), use_container_width=True)
 
         with tab_map["SIEM Rules"]:
             st.subheader("Matched SIEM Detection Rules")
@@ -782,18 +764,9 @@ if page == "Single Check":
             with st.expander("Red flags", expanded=True):
                 for f in res["flags"]:
                     st.write(f"- {f}")
-
             with st.expander("Recommended safe actions", expanded=True):
                 for a in res["actions"]:
                     st.write(f"- {a}")
-
-            with st.expander("SOC playbook (short)", expanded=False):
-                st.write(
-                    "**Containment:** Block sender/URL; warn user(s); isolate device if link clicked.\n\n"
-                    "**Eradication:** Change passwords; revoke sessions; enable MFA.\n\n"
-                    "**Recovery:** Monitor accounts; educate users; update blocklists.\n\n"
-                    "**Reporting:** Escalate high risk cases to IT/SOC with IOCs and screenshots."
-                )
 
         with tab_map["Report"]:
             st.subheader("Case Note + Export")
@@ -817,8 +790,8 @@ if page == "Single Check":
 
 elif page == "Batch Check":
     render_header("Batch Check")
-
     st.caption("Paste multiple messages. Separate each message with a blank line.")
+
     batch = st.text_area(
         "Batch input:",
         height=240,
@@ -861,7 +834,6 @@ elif page == "Batch Check":
 
 elif page == "Dashboard":
     render_header("Dashboard")
-
     st.caption("Saved cases from cases.csv (note: Streamlit Cloud storage can reset).")
 
     if not os.path.exists(CASES_FILE):
@@ -894,20 +866,16 @@ elif page == "Dashboard":
 
 elif page == "About":
     render_header("About")
-
     st.write(f"""
-**{APP_NAME}** is a Digital Inclusion-focused tool built to help users and SOC beginners triage suspicious SMS/WhatsApp messages and phishing emails.
+**{APP_NAME}** is a Digital Inclusion-focused tool that helps users and SOC beginners triage suspicious SMS/WhatsApp messages and phishing emails.
 
-**What makes it stand out**
+**Key Features**
 - Offline AI spam probability (TF‑IDF + Logistic Regression)
-- Nigeria-focused scam categories (OTP, NIN/CBN/EFCC, job scams, dispatch scams)
-- SIEM-style detections (Sigma-like rules) + MITRE T1566 mapping
+- Nigeria-focused scam categories (OTP, NIN/CBN/EFCC, job scams)
+- SOC/SIEM-style detections + MITRE T1566 mapping
 - IOC extraction (URLs, phone numbers, account patterns)
 - Email verification signals: SPF/DKIM/DMARC from headers, Reply‑To mismatch, expected domain check, DNS SPF/DMARC presence
-- Downloadable SOC case note + batch triage + dashboard
-
-**Live Demo**
-- {st.session_state.get("live_url", "https://phishtriage-ng-lite-oaawal.streamlit.app")}
+- Downloadable case note + batch triage + dashboard
 
 **Privacy**
 Avoid pasting real OTPs, passwords, or highly sensitive personal data.
