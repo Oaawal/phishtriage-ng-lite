@@ -2,20 +2,24 @@ import re
 import os
 import csv
 from datetime import datetime
+from email.utils import parseaddr
+import difflib
 
+import dns.resolver
 import joblib
 import pandas as pd
 import streamlit as st
 
 st.set_page_config(page_title="PhishTriage NG Lite", layout="centered")
 
+# ---------------- Model loading ----------------
 @st.cache_resource
 def load_model():
     return joblib.load("model.joblib")
 
 model = load_model()
 
-# ---------------- Nigeria-focused categories (rule-based uniqueness) ----------------
+# ---------------- Nigeria-focused categories ----------------
 CATEGORIES = {
     "Bank/Fintech OTP Scam": [
         "otp", "one time password", "token", "pin", "verify your account",
@@ -41,6 +45,7 @@ CATEGORIES = {
     ],
 }
 
+# Removed normal words like "today" to reduce false positives
 URGENCY_WORDS = ["urgent", "immediately", "now", "last warning", "final", "act fast", "limited time", "within 24 hours"]
 CREDENTIAL_WORDS = ["otp", "pin", "password", "token", "verification code"]
 MONEY_WORDS = ["pay", "payment", "transfer", "send", "fee", "charge", "deposit", "refund", "cash", "subscription"]
@@ -122,9 +127,10 @@ def siem_run_rules(text: str, urls, phones):
 
     return siem_risk, matches
 
+# ---------------- IOC regex ----------------
 URL_REGEX = r"(?i)\b((?:https?://|www\.)[^\s]+)"
 PHONE_REGEX = r"(?i)(\+234\d{10}|\b0\d{10}\b)"
-ACCT_REGEX = r"(?i)\b\d{10}\b"  # simple 10-digit pattern
+ACCT_REGEX = r"(?i)\b\d{10}\b"
 
 # ---------------- Risk helpers ----------------
 RISK_RANK = {"Low": 0, "Medium": 1, "High": 2}
@@ -202,16 +208,20 @@ def advice(risk_level: str, category: str):
 def rule_based_risk(text: str, urls, phones) -> str:
     t = text.lower()
 
-    # High-risk if requesting credentials
     if any(x in t for x in ["otp", "pin", "password", "token", "verification code"]):
         return "High"
 
     score = 0
-    if urls: score += 1
-    if phones: score += 1
-    if any(w in t for w in URGENCY_WORDS): score += 1
-    if any(x in t for x in ["cbn", "nin", "efcc", "arrest", "fine", "court", "bvn"]): score += 1
-    if any(x in t for x in ["bit.ly", "tinyurl", "t.co"]): score += 1
+    if urls:
+        score += 1
+    if phones:
+        score += 1
+    if any(w in t for w in URGENCY_WORDS):
+        score += 1
+    if any(x in t for x in ["cbn", "nin", "efcc", "arrest", "fine", "court", "bvn"]):
+        score += 1
+    if any(x in t for x in ["bit.ly", "tinyurl", "t.co"]):
+        score += 1
 
     if score >= 3:
         return "High"
@@ -219,6 +229,112 @@ def rule_based_risk(text: str, urls, phones) -> str:
         return "Medium"
     return "Low"
 
+# ---------------- Email verification helpers ----------------
+def extract_domain_from_email(addr: str) -> str:
+    _, email_addr = parseaddr(addr or "")
+    if "@" in email_addr:
+        return email_addr.split("@")[-1].lower().strip()
+    return ""
+
+def parse_authentication_results(headers_text: str) -> dict:
+    h = (headers_text or "").lower()
+    out = {}
+    for key in ["spf", "dkim", "dmarc"]:
+        m = re.search(rf"{key}=(pass|fail|softfail|neutral|none|temperror|permerror)", h)
+        if m:
+            out[key] = m.group(1)
+    return out
+
+@st.cache_data(show_spinner=False)
+def dns_txt_records(domain: str):
+    try:
+        answers = dns.resolver.resolve(domain, "TXT")
+        records = []
+        for r in answers:
+            s = "".join([x.decode() if isinstance(x, bytes) else str(x) for x in r.strings])
+            records.append(s)
+        return records
+    except Exception:
+        return []
+
+def check_spf_dmarc_presence(from_domain: str) -> dict:
+    result = {"spf_present": False, "dmarc_present": False}
+
+    txt = dns_txt_records(from_domain)
+    result["spf_present"] = any("v=spf1" in t.lower() for t in txt)
+
+    dmarc_txt = dns_txt_records(f"_dmarc.{from_domain}")
+    result["dmarc_present"] = any("v=dmarc1" in t.lower() for t in dmarc_txt)
+
+    return result
+
+def email_auth_checks(from_addr: str, reply_to: str, expected_domain: str, headers_text: str):
+    checks = []
+
+    from_domain = extract_domain_from_email(from_addr)
+    reply_domain = extract_domain_from_email(reply_to)
+
+    auth = parse_authentication_results(headers_text)
+
+    if auth:
+        for k in ["spf", "dkim", "dmarc"]:
+            if k in auth:
+                status = "PASS" if auth[k] == "pass" else ("WARN" if auth[k] in ["none", "neutral"] else "FAIL")
+                checks.append({"check": f"{k.upper()} result (from headers)", "status": status, "detail": f"{k}={auth[k]}"})
+    else:
+        checks.append({
+            "check": "SPF/DKIM/DMARC results",
+            "status": "WARN",
+            "detail": "No Authentication-Results found. Paste email headers for stronger verification."
+        })
+
+    if reply_to and from_domain and reply_domain:
+        if reply_domain != from_domain:
+            checks.append({
+                "check": "Reply-To domain mismatch",
+                "status": "FAIL",
+                "detail": f"From domain is {from_domain} but Reply-To domain is {reply_domain}."
+            })
+        else:
+            checks.append({
+                "check": "Reply-To alignment",
+                "status": "PASS",
+                "detail": "Reply-To domain matches From domain."
+            })
+
+    if expected_domain:
+        exp = expected_domain.lower().strip()
+        if from_domain == exp:
+            checks.append({
+                "check": "Expected sender domain match",
+                "status": "PASS",
+                "detail": f"From domain matches expected domain: {exp}"
+            })
+        else:
+            similarity = difflib.SequenceMatcher(None, from_domain, exp).ratio() if from_domain and exp else 0
+            status = "FAIL" if similarity > 0.75 else "WARN"
+            checks.append({
+                "check": "Expected sender domain mismatch",
+                "status": status,
+                "detail": f"From domain ({from_domain}) != expected ({exp}). Similarity={similarity:.2f}"
+            })
+
+    if from_domain:
+        dns_presence = check_spf_dmarc_presence(from_domain)
+        checks.append({
+            "check": "SPF record present (DNS)",
+            "status": "PASS" if dns_presence["spf_present"] else "WARN",
+            "detail": "SPF TXT record found." if dns_presence["spf_present"] else "No SPF TXT record found."
+        })
+        checks.append({
+            "check": "DMARC record present (DNS)",
+            "status": "PASS" if dns_presence["dmarc_present"] else "WARN",
+            "detail": "DMARC TXT record found." if dns_presence["dmarc_present"] else "No DMARC TXT record found."
+        })
+
+    return checks
+
+# ---------------- Core analysis ----------------
 def analyze_message(msg: str) -> dict:
     prob_spam = float(model.predict_proba([msg])[0][1])
     ai_risk = score_to_risk(prob_spam)
@@ -227,7 +343,6 @@ def analyze_message(msg: str) -> dict:
     category = categorize(msg)
 
     rule_risk = rule_based_risk(msg, urls, phones)
-
     siem_risk, siem_matches = siem_run_rules(msg, urls, phones)
 
     final_risk = max_risk(ai_risk, rule_risk)
@@ -256,10 +371,14 @@ def analyze_message(msg: str) -> dict:
         "siem_matches": siem_matches,
     }
 
-def build_report(res: dict) -> str:
+def build_report(res: dict, email_checks=None) -> str:
     siem_lines = "\n".join(
         [f"- {m['severity']} | {m['id']} — {m['name']} ({m['mitre']}) | {m['why']}" for m in res["siem_matches"]]
     ) if res["siem_matches"] else "None"
+
+    email_lines = "None"
+    if email_checks:
+        email_lines = "\n".join([f"- {c['status']} — {c['check']}: {c['detail']}" for c in email_checks])
 
     return f"""PhishTriage NG Lite — Case Note
 Time: {res["time"]}
@@ -280,6 +399,9 @@ Extracted IOCs:
 - Phone Numbers: {", ".join(res["phones"]) if res["phones"] else "None"}
 - Possible Account Numbers: {", ".join(res["accts"]) if res["accts"] else "None"}
 
+Email authenticity checks (if email):
+{email_lines}
+
 Red Flags:
 {chr(10).join(["- " + x for x in res["flags"]])}
 
@@ -291,10 +413,11 @@ Matched SIEM Rules:
 
 Tool Disclosure:
 - AI: TF-IDF + Logistic Regression (offline, scikit-learn)
+- SIEM rules: Sigma-like keyword rules + MITRE mapping
 - App: Streamlit (Python)
 """
 
-# ---------------- Case logging (free CSV storage) ----------------
+# ---------------- Case logging (CSV) ----------------
 CASES_FILE = "cases.csv"
 
 def save_case(res: dict):
@@ -325,28 +448,76 @@ page = st.sidebar.radio("Menu", ["Single Check", "Batch Check", "Dashboard", "Ab
 
 if page == "Single Check":
     st.title("PhishTriage NG Lite")
-    st.caption("Digital Inclusion project: simple scam/phishing checker for SMS/WhatsApp messages (AI + SOC-style IOC extraction).")
+    st.caption("Digital Inclusion project: scam/phishing checker for SMS/WhatsApp + Email triage (AI + SIEM rules + IOC extraction).")
 
-    msg = st.text_area(
-        "Paste the message text here:",
-        height=180,
-        key="single_msg",
-        placeholder="Paste SMS/WhatsApp message..."
-    )
+    input_type = st.selectbox("Input type", ["SMS/WhatsApp", "Email"], key="input_type")
+
+    headers_text = ""
+    email_from = ""
+    email_reply_to = ""
+    expected_domain = ""
+    email_checks = None
+
+    if input_type == "SMS/WhatsApp":
+        msg = st.text_area(
+            "Paste the message text here:",
+            height=180,
+            key="single_msg",
+            placeholder="Paste SMS/WhatsApp message..."
+        )
+        combined_msg = msg
+    else:
+        email_from = st.text_input("From (optional):", key="email_from")
+        email_reply_to = st.text_input("Reply-To (optional):", key="email_reply_to")
+        email_subject = st.text_input("Subject (optional):", key="email_subject")
+        email_body = st.text_area("Email body:", height=180, key="email_body")
+
+        headers_text = st.text_area(
+            "Email headers (recommended for verification):",
+            height=120,
+            key="email_headers",
+            placeholder="Paste Authentication-Results / Received headers here..."
+        )
+
+        expected_domain = st.text_input(
+            "Expected sender domain (optional, enterprise check e.g. yourcompany.com):",
+            key="expected_domain"
+        )
+
+        combined_msg = (
+            f"From: {email_from}\n"
+            f"Reply-To: {email_reply_to}\n"
+            f"Subject: {email_subject}\n\n"
+            f"{email_body}\n\n"
+            f"Headers:\n{headers_text}"
+        )
 
     def clear_single_msg():
         st.session_state["single_msg"] = ""
+        st.session_state["email_from"] = ""
+        st.session_state["email_reply_to"] = ""
+        st.session_state["email_subject"] = ""
+        st.session_state["email_body"] = ""
+        st.session_state["email_headers"] = ""
+        st.session_state["expected_domain"] = ""
 
     col1, col2 = st.columns([1, 1])
     analyze = col1.button("Analyze", type="primary")
     col2.button("Clear", on_click=clear_single_msg)
 
     if analyze:
-        if not msg.strip():
+        if not combined_msg.strip():
             st.warning("Please paste a message to analyze.")
             st.stop()
 
-        res = analyze_message(msg)
+        res = analyze_message(combined_msg)
+
+        if input_type == "Email":
+            st.subheader("Email authenticity checks (verification signals)")
+            email_checks = email_auth_checks(email_from, email_reply_to, expected_domain, headers_text)
+            for c in email_checks:
+                st.write(f"- **{c['status']}** — {c['check']}: {c['detail']}")
+
         st.subheader("Result")
         st.write(f"**Risk level:** {res['risk']}")
         st.write(f"**Spam probability (AI):** {res['ai_prob']:.2f}")
@@ -368,7 +539,7 @@ if page == "Single Check":
         for a in res["actions"]:
             st.write(f"- {a}")
 
-        report = build_report(res)
+        report = build_report(res, email_checks=email_checks)
 
         c1, c2 = st.columns([1, 1])
         with c1:
@@ -383,14 +554,11 @@ if page == "Single Check":
                 save_case(res)
                 st.success("Saved to cases.csv")
 
-        st.write(f"**SIEM rule risk:** {res['siem_risk']}")
         st.subheader("Matched SIEM Detection Rules")
-
         if res["siem_matches"]:
             for m in res["siem_matches"]:
                 st.write(f"- **{m['severity']}** | {m['id']} — {m['name']} ({m['mitre']})")
                 st.write(f"  - Why: {m['why']}")
-
         else:
             st.write("No SIEM rules matched.")
 
@@ -414,17 +582,18 @@ elif page == "Batch Check":
 
         results = []
         for b in blocks:
-            res = analyze_message(b)
+            r = analyze_message(b)
             results.append({
-                "time": res["time"],
-                "risk": res["risk"],
-                "ai_prob": round(res["ai_prob"], 2),
-                "ai_risk": res["ai_risk"],
-                "rule_risk": res["rule_risk"],
-                "category": res["category"],
-                "urls": " | ".join(res["urls"]) if res["urls"] else "",
-                "phones": " | ".join(res["phones"]) if res["phones"] else "",
-                "message": (res["message"][:80] + "...") if len(res["message"]) > 80 else res["message"]
+                "time": r["time"],
+                "risk": r["risk"],
+                "ai_prob": round(r["ai_prob"], 2),
+                "ai_risk": r["ai_risk"],
+                "rule_risk": r["rule_risk"],
+                "siem_risk": r["siem_risk"],
+                "category": r["category"],
+                "urls": " | ".join(r["urls"]) if r["urls"] else "",
+                "phones": " | ".join(r["phones"]) if r["phones"] else "",
+                "message": (r["message"][:80] + "...") if len(r["message"]) > 80 else r["message"]
             })
 
         df = pd.DataFrame(results)
@@ -445,7 +614,7 @@ elif page == "Batch Check":
 
 elif page == "Dashboard":
     st.title("Dashboard")
-    st.caption("Shows saved triage cases (stored locally in cases.csv).")
+    st.caption("Shows saved triage cases (stored locally in cases.csv). Note: cloud storage can reset on free hosting.")
 
     if not os.path.exists(CASES_FILE):
         st.info("No saved cases yet. Go to 'Single Check' or 'Batch Check' and save cases.")
@@ -462,26 +631,25 @@ elif page == "Dashboard":
     st.dataframe(df.tail(20), use_container_width=True)
 
     st.subheader("Cases by Risk")
-    risk_counts = df["risk"].value_counts()
-    st.bar_chart(risk_counts)
+    st.bar_chart(df["risk"].value_counts())
 
     st.subheader("Cases by Category")
-    cat_counts = df["category"].value_counts()
-    st.bar_chart(cat_counts)
+    st.bar_chart(df["category"].value_counts())
 
 elif page == "About":
     st.title("About")
     st.write("""
-**PhishTriage NG Lite** is a Digital Inclusion-focused tool that helps users and SOC beginners triage suspicious SMS/WhatsApp messages.
+**PhishTriage NG Lite** is a Digital Inclusion-focused tool that helps users and SOC beginners triage suspicious SMS/WhatsApp messages and phishing emails.
 
 **Key Features**
 - Offline AI spam probability (TF-IDF + Logistic Regression)
 - Nigeria-focused scam categories (CBN/NIN, OTP scams, job scams, etc.)
-- SOC-style IOC extraction (URLs, phone numbers, account patterns)
-- Rule-based risk override (practical SOC logic)
-- Case logging + dashboard (cases.csv)
-- Batch triage for multiple messages
+- SIEM-style detection rules (Sigma-like) + MITRE T1566 mapping
+- IOC extraction (URLs, phone numbers, account patterns)
+- Email verification signals: SPF/DKIM/DMARC (from headers), domain alignment checks, DNS presence of SPF/DMARC
+- Downloadable case note report (.txt)
+- Batch triage + case logging + dashboard
 
 **Privacy**
-- Avoid pasting sensitive personal data (real OTP, bank details, or private info).
+Avoid pasting real OTPs, bank details, or highly sensitive personal data.
 """)
