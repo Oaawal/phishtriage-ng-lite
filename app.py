@@ -5,6 +5,7 @@ from pathlib import Path
 from datetime import datetime
 from email.utils import parseaddr
 import difflib
+from typing import Optional
 
 import dns.resolver
 import joblib
@@ -19,7 +20,6 @@ APP_NAME = "PhishTriage NG Lite"
 BRAND_NAME = "AWAL Global Consults"
 TAGLINE = "Governance | Risk | Compliance"
 
-# Brand colors (approx)
 BRAND_GOLD = "#B08D57"
 BG_LIGHT = "#F5F7FB"
 CARD_BG = "#FFFFFF"
@@ -28,21 +28,24 @@ MUTED = "#6B7280"
 
 st.set_page_config(page_title=APP_NAME, layout="wide")
 
+
+# =========================
+# CSS (Header + cards + background)
+# =========================
 st.markdown(
     f"""
 <style>
-/* App background */
 .stApp {{
   background: {BG_LIGHT};
 }}
 .block-container {{
-  padding-top: 1.1rem;
-  padding-bottom: 2rem;
+  padding-top: 1.0rem;
+  padding-bottom: 2.0rem;
 }}
 .muted {{ color: {MUTED}; font-size: 0.92rem; }}
 .small {{ color: {MUTED}; font-size: 0.85rem; }}
 
-/* Header */
+/* Header wrapper */
 .header-wrap {{
   border: 1px solid #e5e7eb;
   background: {CARD_BG};
@@ -50,17 +53,20 @@ st.markdown(
   padding: 14px 16px;
   margin-bottom: 0.9rem;
   box-shadow: 0 10px 28px rgba(15, 23, 42, 0.06);
+  overflow: visible;
 }}
 .header-title {{
   font-size: 1.65rem;
   font-weight: 900;
   color: {TEXT_DARK};
-  line-height: 1.1;
+  line-height: 1.35;
+  padding-top: 4px;
+  padding-bottom: 2px;
 }}
 .header-sub {{
   font-size: 0.92rem;
   color: {MUTED};
-  margin-top: 0.2rem;
+  margin-top: 0.15rem;
 }}
 .header-page {{
   display: inline-block;
@@ -71,10 +77,8 @@ st.markdown(
   background: rgba(176,141,87,0.12);
   color: {BRAND_GOLD};
   border: 1px solid rgba(176,141,87,0.35);
-  margin-top: 0.35rem;
+  margin-top: 0.4rem;
 }}
-
-/* Cards */
 .card {{
   border: 1px solid #e5e7eb;
   border-radius: 16px;
@@ -82,8 +86,6 @@ st.markdown(
   background: {CARD_BG};
   box-shadow: 0 10px 28px rgba(15, 23, 42, 0.06);
 }}
-
-/* Badges */
 .badge {{
   display:inline-block;
   padding:6px 12px;
@@ -97,14 +99,13 @@ st.markdown(
 .badge-medium {{ background:#f59e0b; }}
 .badge-high {{ background:#dc2626; }}
 
-/* Buttons (subtle) */
 div.stButton > button {{
   border-radius: 12px !important;
   padding: 0.55rem 0.9rem !important;
   border: 1px solid #d1d5db !important;
   font-weight: 700 !important;
 }}
-/* Tables header */
+
 thead tr th {{
   background: #f9fafb !important;
 }}
@@ -119,21 +120,21 @@ def risk_badge(risk: str) -> str:
     return f'<span class="badge {cls}">{risk.upper()} RISK</span>'
 
 
-def get_logo_path() -> str | None:
-    """
-    Auto-detects the logo file in assets folder.
-    Works with your assets/awal_logo.jpeg.
-    """
-    candidates = [
-        "awal_logo.jpeg", "awal_logo.jpg", "awal_logo.png", "awal_logo.webp",
-        "AWAL_logo.jpeg", "AWAL_logo.jpg", "AWAL_logo.png", "AWAL_logo.webp",
-    ]
-    for name in candidates:
+# =========================
+# Logo + Header
+# =========================
+def get_logo_path() -> Optional[str]:
+    preferred = Path("assets") / "awal_logo.jpeg"
+    if preferred.exists():
+        return str(preferred)
+
+    # Try common extensions/names
+    for name in ["awal_logo.jpg", "awal_logo.png", "awal_logo.webp", "awal_logo.jpeg"]:
         p = Path("assets") / name
         if p.exists():
             return str(p)
 
-    # fallback: any image in assets folder
+    # Fallback: any image in assets
     assets_dir = Path("assets")
     if assets_dir.exists():
         for ext in ("png", "jpg", "jpeg", "webp"):
@@ -145,13 +146,12 @@ def get_logo_path() -> str | None:
 
 
 def render_header(page_name: str):
-    """Brand header shown on every page."""
-    left, right = st.columns([0.9, 4.1], vertical_alignment="center")
+    left, right = st.columns([0.7, 4.3], vertical_alignment="center")
 
     with left:
         logo_path = get_logo_path()
         if logo_path:
-            st.image(logo_path, use_container_width=True)
+            st.image(logo_path, width=230)
         else:
             st.markdown(
                 f"<div class='card'><b style='color:{BRAND_GOLD}'>AWAL</b><br><span class='small'>Logo missing</span></div>",
@@ -181,8 +181,9 @@ def load_model():
 
 model = load_model()
 
+
 # =========================
-# Detection logic
+# Detection logic (Nigeria + SOC)
 # =========================
 CATEGORIES = {
     "Bank/Fintech OTP Scam": [
@@ -209,11 +210,23 @@ CATEGORIES = {
     ],
 }
 
-# Keep urgency list strict to reduce false positives
 URGENCY_WORDS = ["urgent", "immediately", "now", "last warning", "final", "act fast", "limited time", "within 24 hours"]
-CREDENTIAL_WORDS = ["otp", "pin", "password", "token", "verification code"]
+
+# Sensitive terms (used for red flags + SIEM)
+SENSITIVE_TERMS = {
+    "OTP": ["otp", "one time password", "verification code", "auth code"],
+    "PIN": ["pin"],
+    "Password": ["password", "passcode"],
+    "BVN": ["bvn"],
+    "NIN": ["nin"],
+    "Card/CVV": ["cvv", "card number", "atm number"],
+    "Token": ["token"],
+}
+
+CREDENTIAL_WORDS = ["otp", "pin", "password", "token", "verification code", "bvn", "nin", "cvv", "card number"]
 MONEY_WORDS = ["pay", "payment", "transfer", "send", "fee", "charge", "deposit", "refund", "cash", "subscription"]
 
+# ---------------- SIEM-style detection rules ----------------
 SIEM_RULES = [
     {
         "id": "NG-SIEM-001",
@@ -247,9 +260,19 @@ SIEM_RULES = [
         "match": lambda t, urls, phones: any(x in t for x in ["account will be blocked", "deactivated", "suspended", "restricted"]) and (len(urls) > 0 or "click" in t),
         "why": "Claims account shutdown and pushes link clicking/verification."
     },
+    # NEW: Sensitive data request rule (explicit)
+    {
+        "id": "NG-SIEM-007",
+        "name": "Sensitive Data Request (OTP/PIN/BVN/NIN/CVV)",
+        "severity": "High",
+        "mitre": "T1566 (Phishing)",
+        "match": lambda t, urls, phones: any(x in t for x in ["otp", "pin", "password", "bvn", "nin", "cvv", "card number"]),
+        "why": "Requests highly sensitive data commonly used in account takeover and fraud."
+    },
 ]
 
 SIEM_SEV_RANK = {"Low": 0, "Medium": 1, "High": 2}
+
 
 def siem_run_rules(text: str, urls, phones):
     t = (text or "").lower()
@@ -275,14 +298,17 @@ def siem_run_rules(text: str, urls, phones):
     return siem_risk, matches
 
 
+# ---------------- IOC regex ----------------
 URL_REGEX = r"(?i)\b((?:https?://|www\.)[^\s]+)"
 PHONE_REGEX = r"(?i)(\+234\d{10}|\b0\d{10}\b)"
 ACCT_REGEX = r"(?i)\b\d{10}\b"
 
 RISK_RANK = {"Low": 0, "Medium": 1, "High": 2}
 
+
 def max_risk(a: str, b: str) -> str:
     return a if RISK_RANK[a] >= RISK_RANK[b] else b
+
 
 def score_to_risk(prob_spam: float):
     if prob_spam >= 0.80:
@@ -291,12 +317,14 @@ def score_to_risk(prob_spam: float):
         return "Medium"
     return "Low"
 
+
 def defang(url: str) -> str:
     u = (url or "").strip()
     u = re.sub(r"(?i)^https?://", "hxxp://", u)
     if u.lower().startswith("www."):
         u = "hxxp://" + u
     return u
+
 
 def extract_iocs(text: str):
     urls = re.findall(URL_REGEX, text or "")
@@ -305,6 +333,7 @@ def extract_iocs(text: str):
     urls = [defang(u) for u in urls]
     return sorted(set(urls)), sorted(set(phones)), sorted(set(accts))
 
+
 def categorize(text: str):
     t = (text or "").lower()
     for cat, kws in CATEGORIES.items():
@@ -312,26 +341,79 @@ def categorize(text: str):
             return cat
     return "General Suspicious Message"
 
-def red_flags(text: str, urls, phones):
+
+def detect_sensitive_requests(text: str):
+    """Returns a list like ['OTP', 'PIN', 'BVN'] if message requests them."""
+    t = (text or "").lower()
+    found = []
+    for label, keywords in SENSITIVE_TERMS.items():
+        if any(k in t for k in keywords):
+            found.append(label)
+    return found
+
+
+def detect_otp_codes(text: str):
+    """
+    Detect 4–8 digit codes only when OTP context exists (otp/code/verification).
+    Returns list of raw codes (will be masked before display/storage).
+    """
+    t = (text or "").lower()
+    context = any(k in t for k in ["otp", "verification code", "one time password", "auth code", "code"])
+    if not context:
+        return []
+
+    codes = re.findall(r"\b\d{4,8}\b", text or "")
+    return list(dict.fromkeys(codes))  # unique, preserve order
+
+
+def mask_code(code: str) -> str:
+    # Mask digit codes like 123456 -> 12****
+    if not code or not code.isdigit():
+        return code
+    if len(code) <= 2:
+        return "*" * len(code)
+    return code[:2] + "*" * (len(code) - 2)
+
+
+def sanitize_message_for_storage(text: str, otp_codes: list[str]):
+    """Removes raw OTP codes from stored/report message."""
+    sanitized = text or ""
+    for c in otp_codes:
+        sanitized = re.sub(rf"\b{re.escape(c)}\b", mask_code(c), sanitized)
+    return sanitized
+
+
+def red_flags(text: str, urls, phones, sensitive_found, otp_codes):
     t = (text or "").lower()
     flags = []
+
     if any(w in t for w in URGENCY_WORDS):
         flags.append("Uses urgency/pressure tactics (e.g., 'urgent', 'immediately').")
-    if any(w in t for w in CREDENTIAL_WORDS):
-        flags.append("Asks for sensitive credentials (OTP/PIN/password). Legit services never request OTP via chat.")
+
+    if sensitive_found:
+        flags.append(f"Requests sensitive data: {', '.join(sensitive_found)} (high account-takeover risk).")
+
+    if otp_codes:
+        flags.append("Contains OTP-like numeric code(s). Never share OTP with anyone.")
+
     if any(w in t for w in MONEY_WORDS):
         flags.append("Mentions payments/fees/transfers—common in scams.")
+
     if urls:
         flags.append("Contains a link. Scams often use links to steal login details or install malware.")
+
     if phones:
         flags.append("Provides a phone number to move conversation off-platform (common social-engineering tactic).")
+
     if "click" in t or "tap" in t:
         flags.append("Prompts you to click/tap quickly (possible phishing).")
-    return flags[:10] if flags else ["No obvious red flags found, but always verify via official channels."]
+
+    return flags[:12] if flags else ["No obvious red flags found, but always verify via official channels."]
+
 
 def advice(risk_level: str, category: str):
     base = [
-        "Do not share OTP/PIN/password with anyone.",
+        "Do not share OTP/PIN/password/BVN/NIN with anyone.",
         "Verify claims using the official website/app or official customer-care number.",
         "Avoid clicking unknown links; type the official website yourself.",
     ]
@@ -344,11 +426,19 @@ def advice(risk_level: str, category: str):
         base += ["Contact your bank/fintech via official channels if you suspect compromise."]
     return base[:8]
 
-def rule_based_risk(text: str, urls, phones) -> str:
+
+def rule_based_risk(text: str, urls, phones, sensitive_found, otp_codes) -> str:
     t = (text or "").lower()
-    if any(x in t for x in ["otp", "pin", "password", "token", "verification code"]):
+
+    # Any sensitive request => High
+    if sensitive_found:
         return "High"
 
+    # OTP code + urgency/link => High
+    if otp_codes and (urls or any(w in t for w in URGENCY_WORDS)):
+        return "High"
+
+    # Weighted scoring
     score = 0
     if urls:
         score += 1
@@ -377,6 +467,7 @@ def extract_domain_from_email(addr: str) -> str:
         return email_addr.split("@")[-1].lower().strip()
     return ""
 
+
 def parse_authentication_results(headers_text: str) -> dict:
     h = (headers_text or "").lower()
     out = {}
@@ -385,6 +476,7 @@ def parse_authentication_results(headers_text: str) -> dict:
         if m:
             out[key] = m.group(1)
     return out
+
 
 @st.cache_data(show_spinner=False)
 def dns_txt_records(domain: str):
@@ -398,6 +490,7 @@ def dns_txt_records(domain: str):
     except Exception:
         return []
 
+
 def check_spf_dmarc_presence(from_domain: str) -> dict:
     result = {"spf_present": False, "dmarc_present": False}
     txt = dns_txt_records(from_domain)
@@ -405,6 +498,7 @@ def check_spf_dmarc_presence(from_domain: str) -> dict:
     dmarc_txt = dns_txt_records(f"_dmarc.{from_domain}")
     result["dmarc_present"] = any("v=dmarc1" in t.lower() for t in dmarc_txt)
     return result
+
 
 def email_auth_checks(from_addr: str, reply_to: str, expected_domain: str, headers_text: str):
     checks = []
@@ -449,6 +543,7 @@ def email_auth_checks(from_addr: str, reply_to: str, expected_domain: str, heade
 
     return checks
 
+
 def email_verdict(email_checks):
     if not email_checks:
         return "WARN"
@@ -462,16 +557,27 @@ def email_verdict(email_checks):
 
 
 # =========================
-# Core analysis + reporting
+# Core analysis + report
 # =========================
 def analyze_message(msg: str) -> dict:
+    # Detect IOCs early
+    urls, phones, accts = extract_iocs(msg)
+
+    # New: Sensitive request + OTP code detection
+    sensitive_found = detect_sensitive_requests(msg)
+    otp_codes = detect_otp_codes(msg)
+    otp_masked = [mask_code(c) for c in otp_codes]
+
+    # AI
     prob_spam = float(model.predict_proba([msg])[0][1])
     ai_risk = score_to_risk(prob_spam)
 
-    urls, phones, accts = extract_iocs(msg)
     category = categorize(msg)
 
-    rule_risk = rule_based_risk(msg, urls, phones)
+    # Rule risk (improved)
+    rule_risk = rule_based_risk(msg, urls, phones, sensitive_found, otp_codes)
+
+    # SIEM
     siem_risk, siem_matches = siem_run_rules(msg, urls, phones)
 
     final_risk = max_risk(ai_risk, rule_risk)
@@ -480,11 +586,16 @@ def analyze_message(msg: str) -> dict:
     if final_risk == "Low" and not urls and not phones and not siem_matches:
         category = "Likely Legit / Normal Message"
 
-    flags = red_flags(msg, urls, phones)
+    # Red flags + actions
+    flags = red_flags(msg, urls, phones, sensitive_found, otp_codes)
     actions = advice(final_risk, category)
 
+    # Sanitize message for report/storage (mask OTP)
+    sanitized_message = sanitize_message_for_storage(msg, otp_codes)
+
     return {
-        "message": msg,
+        "message": sanitized_message,          # SAFE for display/report/storage
+        "message_raw": msg,                    # only used in-memory (do not save)
         "ai_prob": prob_spam,
         "ai_risk": ai_risk,
         "rule_risk": rule_risk,
@@ -498,7 +609,10 @@ def analyze_message(msg: str) -> dict:
         "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "siem_risk": siem_risk,
         "siem_matches": siem_matches,
+        "sensitive_requested": sensitive_found,
+        "otp_detected_masked": otp_masked,
     }
+
 
 def build_report(res: dict, email_checks=None) -> str:
     siem_lines = "\n".join(
@@ -509,10 +623,13 @@ def build_report(res: dict, email_checks=None) -> str:
     if email_checks:
         email_lines = "\n".join([f"- {c['status']} — {c['check']}: {c['detail']}" for c in email_checks])
 
+    sensitive_line = ", ".join(res.get("sensitive_requested", [])) if res.get("sensitive_requested") else "None"
+    otp_line = ", ".join(res.get("otp_detected_masked", [])) if res.get("otp_detected_masked") else "None"
+
     return f"""{APP_NAME} — Case Note
 Time: {res["time"]}
 
-Input Message:
+Input Message (sanitized):
 {res["message"]}
 
 Triage:
@@ -522,6 +639,12 @@ Triage:
 - Rule-Based Risk: {res["rule_risk"]}
 - Category: {res["category"]}
 - SIEM Rule Risk: {res["siem_risk"]}
+
+Sensitive Data Requested:
+- {sensitive_line}
+
+OTP Codes Detected (masked):
+- {otp_line}
 
 Extracted IOCs:
 - URLs: {", ".join(res["urls"]) if res["urls"] else "None"}
@@ -542,15 +665,21 @@ Matched SIEM Rules:
 
 Tool Disclosure:
 - AI: TF-IDF + Logistic Regression (offline, scikit-learn)
+- SIEM rules: Sigma-like rules + MITRE mapping
+- OTP handling: detection + masking (privacy safe)
 - Email checks: SPF/DKIM/DMARC parsing + domain alignment + DNS SPF/DMARC presence
 - App: Streamlit (Python)
 """
+
 
 CASES_FILE = "cases.csv"
 
 def save_case(res: dict):
     new_file = not os.path.exists(CASES_FILE)
-    fields = ["time", "risk", "ai_prob", "ai_risk", "rule_risk", "category", "urls", "phones", "accounts", "message"]
+    fields = [
+        "time", "risk", "ai_prob", "ai_risk", "rule_risk", "category",
+        "urls", "phones", "accounts", "sensitive_requested", "otp_detected_masked", "message"
+    ]
 
     row = {
         "time": res["time"],
@@ -562,7 +691,9 @@ def save_case(res: dict):
         "urls": " | ".join(res["urls"]) if res["urls"] else "",
         "phones": " | ".join(res["phones"]) if res["phones"] else "",
         "accounts": " | ".join(res["accts"]) if res["accts"] else "",
-        "message": res["message"].replace("\n", " ").strip(),
+        "sensitive_requested": " | ".join(res.get("sensitive_requested", [])) if res.get("sensitive_requested") else "",
+        "otp_detected_masked": " | ".join(res.get("otp_detected_masked", [])) if res.get("otp_detected_masked") else "",
+        "message": res["message"].replace("\n", " ").strip(),  # sanitized message only
     }
 
     with open(CASES_FILE, "a", newline="", encoding="utf-8") as f:
@@ -588,7 +719,7 @@ with st.sidebar.expander("Quick demo samples", expanded=False):
         st.session_state["input_type"] = "SMS/WhatsApp"
         st.session_state["single_msg"] = (
             "URGENT: Your bank account will be blocked immediately. "
-            "Verify now at www.bank-secure-login.com and send your OTP to confirm."
+            "Verify now at www.bank-secure-login.com and send your OTP 123456 to confirm."
         )
 
     def load_sms_nin():
@@ -620,7 +751,7 @@ if page == "Single Check":
     render_header("Single Check")
 
     st.info(
-        "How it works: Paste message/email → Analyze → Get risk, IOCs, SIEM detections, and safe actions. "
+        "How it works: Paste message/email → Analyze → Get risk, IOCs, SIEM detections, OTP masking, and safe actions. "
         "Avoid pasting real OTPs/passwords.",
         icon="ℹ️",
     )
@@ -687,15 +818,24 @@ if page == "Single Check":
             st.stop()
 
         res = analyze_message(combined_msg)
+
         if input_type == "Email":
             email_checks = email_auth_checks(email_from, email_reply_to, expected_domain, headers_text)
 
+        # Summary card
         st.markdown("<div class='card'>", unsafe_allow_html=True)
         top_left, top_right = st.columns([2, 1], vertical_alignment="center")
+
         with top_left:
             st.markdown(risk_badge(res["risk"]), unsafe_allow_html=True)
             st.markdown(f"**Category:** {res['category']}")
             st.markdown(f"<span class='small'>Time: {res['time']}</span>", unsafe_allow_html=True)
+
+            if res.get("sensitive_requested"):
+                st.markdown(f"**Sensitive requested:** {', '.join(res['sensitive_requested'])}")
+            if res.get("otp_detected_masked"):
+                st.markdown(f"**OTP detected (masked):** {', '.join(res['otp_detected_masked'])}")
+
         with top_right:
             st.markdown("**AI spam probability**")
             st.progress(min(max(res["ai_prob"], 0.0), 1.0))
@@ -723,7 +863,7 @@ if page == "Single Check":
                 f"- **IOCs found:** {len(res['urls']) + len(res['phones']) + len(res['accts'])}\n"
                 f"- **Matched SIEM rules:** {len(res['siem_matches'])}"
             )
-            with st.expander("Message preview", expanded=False):
+            with st.expander("Message preview (sanitized)", expanded=False):
                 st.code(res["message"])
 
         with tab_map["IOCs"]:
@@ -749,7 +889,7 @@ if page == "Single Check":
                 verdict = email_verdict(email_checks)
                 badge_cls = "badge-low" if verdict == "PASS" else "badge-medium" if verdict == "WARN" else "badge-high"
                 st.markdown(f'<span class="badge {badge_cls}">{verdict} (SIGNALS)</span>', unsafe_allow_html=True)
-                st.caption("These are verification signals to support triage. Paste headers to improve confidence.")
+                st.caption("These are signals to support triage. Paste headers for stronger verification.")
                 st.dataframe(pd.DataFrame(email_checks) if email_checks else pd.DataFrame(), use_container_width=True)
 
         with tab_map["SIEM Rules"]:
@@ -816,6 +956,8 @@ elif page == "Batch Check":
                 "rule_risk": r["rule_risk"],
                 "siem_risk": r["siem_risk"],
                 "category": r["category"],
+                "sensitive_requested": ", ".join(r.get("sensitive_requested", [])) if r.get("sensitive_requested") else "",
+                "otp_detected_masked": ", ".join(r.get("otp_detected_masked", [])) if r.get("otp_detected_masked") else "",
                 "urls": " | ".join(r["urls"]) if r["urls"] else "",
                 "phones": " | ".join(r["phones"]) if r["phones"] else "",
                 "message": (r["message"][:90] + "...") if len(r["message"]) > 90 else r["message"],
@@ -867,14 +1009,16 @@ elif page == "Dashboard":
 elif page == "About":
     render_header("About")
     st.write(f"""
-**{APP_NAME}** is a Digital Inclusion-focused tool that helps users and SOC beginners triage suspicious SMS/WhatsApp messages and phishing emails.
+**{APP_NAME}** helps users and SOC beginners triage suspicious SMS/WhatsApp messages and phishing emails.
 
 **Key Features**
 - Offline AI spam probability (TF‑IDF + Logistic Regression)
 - Nigeria-focused scam categories (OTP, NIN/CBN/EFCC, job scams)
-- SOC/SIEM-style detections + MITRE T1566 mapping
+- SIEM-style detections + MITRE T1566 mapping
 - IOC extraction (URLs, phone numbers, account patterns)
-- Email verification signals: SPF/DKIM/DMARC from headers, Reply‑To mismatch, expected domain check, DNS SPF/DMARC presence
+- OTP handling: detection + masking (privacy safe)
+- Sensitive data request detection (OTP/PIN/BVN/NIN/CVV)
+- Email verification signals: SPF/DKIM/DMARC from headers + domain alignment + DNS SPF/DMARC presence
 - Downloadable case note + batch triage + dashboard
 
 **Privacy**
