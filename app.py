@@ -327,16 +327,19 @@ if page == "Single Check":
     st.title("PhishTriage NG Lite")
     st.caption("Digital Inclusion project: simple scam/phishing checker for SMS/WhatsApp messages (AI + SOC-style IOC extraction).")
 
-    msg = st.text_area("Paste the message text here:", height=180, key="single_msg",
-                       placeholder="Paste SMS/WhatsApp message...")
+    msg = st.text_area(
+        "Paste the message text here:",
+        height=180,
+        key="single_msg",
+        placeholder="Paste SMS/WhatsApp message..."
+    )
+
+    def clear_single_msg():
+        st.session_state["single_msg"] = ""
 
     col1, col2 = st.columns([1, 1])
     analyze = col1.button("Analyze", type="primary")
-    clear = col2.button("Clear")
-
-    if clear:
-        st.session_state["single_msg"] = ""
-        st.rerun()
+    col2.button("Clear", on_click=clear_single_msg)
 
     if analyze:
         if not msg.strip():
@@ -344,12 +347,12 @@ if page == "Single Check":
             st.stop()
 
         res = analyze_message(msg)
-
         st.subheader("Result")
         st.write(f"**Risk level:** {res['risk']}")
         st.write(f"**Spam probability (AI):** {res['ai_prob']:.2f}")
         st.write(f"**AI risk:** {res['ai_risk']}")
         st.write(f"**Rule-based risk:** {res['rule_risk']}")
+        st.write(f"**SIEM rule risk:** {res['siem_risk']}")
         st.write(f"**Category (Nigeria-focused):** {res['category']}")
 
         st.subheader("Indicators of Compromise (IOCs)")
