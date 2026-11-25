@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.env
+cases.csv
+data/
+.venv/
