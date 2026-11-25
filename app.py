@@ -210,7 +210,7 @@ CATEGORIES = {
     ],
 }
 
-URGENCY_WORDS = ["urgent", "immediately", "now", "last warning", "final", "act fast", "limited time", "within 24 hours"]
+URGENCY_WORDS = ["urgent", "immediately", "right now", "last warning", "final", "act fast", "limited time", "within 24 hours"]
 
 # Sensitive terms (used for red flags + SIEM)
 SENSITIVE_TERMS = {
@@ -226,6 +226,30 @@ SENSITIVE_TERMS = {
 CREDENTIAL_WORDS = ["otp", "pin", "password", "token", "verification code", "bvn", "nin", "cvv", "card number"]
 MONEY_WORDS = ["pay", "payment", "transfer", "send", "fee", "charge", "deposit", "refund", "cash", "subscription"]
 
+
+# ---------------- Whole-word matching ----------------
+# Substring checks flagged normal messages ("nin" in "morning", "pin" in
+# "shipping", "now" in "know"). These helpers only match whole words/phrases.
+_TERM_CACHE: dict = {}
+
+
+def has_term(text: str, term: str) -> bool:
+    pat = _TERM_CACHE.get(term)
+    if pat is None:
+        pat = re.compile(r"(?<![a-z0-9])" + r"\s+".join(re.escape(p) for p in term.lower().split()) + r"(?![a-z0-9])")
+        _TERM_CACHE[term] = pat
+    return pat.search((text or "").lower()) is not None
+
+
+def has_any(text: str, terms) -> bool:
+    return any(has_term(text, term) for term in terms)
+
+
+def is_warning_notice(text: str) -> bool:
+    """True for messages that WARN about OTP/PIN sharing ("do not share") rather than ask for them."""
+    t = (text or "").lower()
+    return bool(re.search(r"(do not|don't|dont|never)\s+(share|disclose|give)|will never ask", t))
+
 # ---------------- SIEM-style detection rules ----------------
 SIEM_RULES = [
     {
@@ -233,7 +257,7 @@ SIEM_RULES = [
         "name": "Credential Harvesting / OTP Request",
         "severity": "High",
         "mitre": "T1566 (Phishing)",
-        "match": lambda t, urls, phones: any(x in t for x in ["otp", "pin", "password", "token", "verification code"]),
+        "match": lambda t, urls, phones: has_any(t, ["otp", "pin", "password", "token", "verification code"]) and not (is_warning_notice(t) and not urls and not phones),
         "why": "Message requests sensitive credentials (OTP/PIN/password)."
     },
     {
@@ -241,7 +265,7 @@ SIEM_RULES = [
         "name": "Government/Regulator Impersonation + Threat",
         "severity": "High",
         "mitre": "T1566 (Phishing)",
-        "match": lambda t, urls, phones: any(x in t for x in ["cbn", "nin", "efcc"]) and any(x in t for x in ["arrest", "fine", "court", "jail"]),
+        "match": lambda t, urls, phones: has_any(t, ["cbn", "nin", "efcc"]) and has_any(t, ["arrest", "fine of", "court", "jail"]),
         "why": "Impersonates CBN/NIN/EFCC and uses threats (arrest/fine) to force action."
     },
     {
@@ -249,7 +273,7 @@ SIEM_RULES = [
         "name": "Shortened Link + Urgency",
         "severity": "High",
         "mitre": "T1566 (Phishing)",
-        "match": lambda t, urls, phones: (("bit.ly" in t) or ("tinyurl" in t) or ("t.co" in t)) and any(w in t for w in URGENCY_WORDS),
+        "match": lambda t, urls, phones: has_any(t, ["bit.ly", "tinyurl", "t.co"]) and has_any(t, URGENCY_WORDS),
         "why": "Uses a shortened link plus urgency—common phishing pattern."
     },
     {
@@ -257,7 +281,7 @@ SIEM_RULES = [
         "name": "Brand/Account Shutdown Pressure",
         "severity": "Medium",
         "mitre": "T1566 (Phishing)",
-        "match": lambda t, urls, phones: any(x in t for x in ["account will be blocked", "deactivated", "suspended", "restricted"]) and (len(urls) > 0 or "click" in t),
+        "match": lambda t, urls, phones: has_any(t, ["account will be blocked", "deactivated", "suspended", "restricted"]) and (len(urls) > 0 or has_any(t, ["click"])),
         "why": "Claims account shutdown and pushes link clicking/verification."
     },
     # NEW: Sensitive data request rule (explicit)
@@ -266,7 +290,7 @@ SIEM_RULES = [
         "name": "Sensitive Data Request (OTP/PIN/BVN/NIN/CVV)",
         "severity": "High",
         "mitre": "T1566 (Phishing)",
-        "match": lambda t, urls, phones: any(x in t for x in ["otp", "pin", "password", "bvn", "nin", "cvv", "card number"]),
+        "match": lambda t, urls, phones: has_any(t, ["otp", "pin", "password", "bvn", "nin", "cvv", "card number"]) and not (is_warning_notice(t) and not urls and not phones),
         "why": "Requests highly sensitive data commonly used in account takeover and fraud."
     },
 ]
@@ -337,7 +361,7 @@ def extract_iocs(text: str):
 def categorize(text: str):
     t = (text or "").lower()
     for cat, kws in CATEGORIES.items():
-        if any(kw in t for kw in kws):
+        if has_any(t, kws):
             return cat
     return "General Suspicious Message"
 
@@ -347,7 +371,7 @@ def detect_sensitive_requests(text: str):
     t = (text or "").lower()
     found = []
     for label, keywords in SENSITIVE_TERMS.items():
-        if any(k in t for k in keywords):
+        if has_any(t, keywords):
             found.append(label)
     return found
 
@@ -358,7 +382,7 @@ def detect_otp_codes(text: str):
     Returns list of raw codes (will be masked before display/storage).
     """
     t = (text or "").lower()
-    context = any(k in t for k in ["otp", "verification code", "one time password", "auth code", "code"])
+    context = has_any(t, ["otp", "verification code", "one time password", "auth code", "code"])
     if not context:
         return []
 
@@ -387,7 +411,7 @@ def red_flags(text: str, urls, phones, sensitive_found, otp_codes):
     t = (text or "").lower()
     flags = []
 
-    if any(w in t for w in URGENCY_WORDS):
+    if has_any(t, URGENCY_WORDS):
         flags.append("Uses urgency/pressure tactics (e.g., 'urgent', 'immediately').")
 
     if sensitive_found:
@@ -396,7 +420,7 @@ def red_flags(text: str, urls, phones, sensitive_found, otp_codes):
     if otp_codes:
         flags.append("Contains OTP-like numeric code(s). Never share OTP with anyone.")
 
-    if any(w in t for w in MONEY_WORDS):
+    if has_any(t, MONEY_WORDS):
         flags.append("Mentions payments/fees/transfers—common in scams.")
 
     if urls:
@@ -405,7 +429,7 @@ def red_flags(text: str, urls, phones, sensitive_found, otp_codes):
     if phones:
         flags.append("Provides a phone number to move conversation off-platform (common social-engineering tactic).")
 
-    if "click" in t or "tap" in t:
+    if has_any(t, ["click", "tap"]):
         flags.append("Prompts you to click/tap quickly (possible phishing).")
 
     return flags[:12] if flags else ["No obvious red flags found, but always verify via official channels."]
@@ -430,12 +454,12 @@ def advice(risk_level: str, category: str):
 def rule_based_risk(text: str, urls, phones, sensitive_found, otp_codes) -> str:
     t = (text or "").lower()
 
-    # Any sensitive request => High
-    if sensitive_found:
+    # Any sensitive request => High (unless it is a "do not share" notice with no link/number)
+    if sensitive_found and not (is_warning_notice(t) and not urls and not phones):
         return "High"
 
     # OTP code + urgency/link => High
-    if otp_codes and (urls or any(w in t for w in URGENCY_WORDS)):
+    if otp_codes and (urls or has_any(t, URGENCY_WORDS)):
         return "High"
 
     # Weighted scoring
@@ -444,11 +468,11 @@ def rule_based_risk(text: str, urls, phones, sensitive_found, otp_codes) -> str:
         score += 1
     if phones:
         score += 1
-    if any(w in t for w in URGENCY_WORDS):
+    if has_any(t, URGENCY_WORDS):
         score += 1
-    if any(x in t for x in ["cbn", "nin", "efcc", "arrest", "fine", "court", "bvn"]):
+    if has_any(t, ["cbn", "nin", "efcc", "arrest", "fine of", "court", "bvn"]):
         score += 1
-    if any(x in t for x in ["bit.ly", "tinyurl", "t.co"]):
+    if has_any(t, ["bit.ly", "tinyurl", "t.co"]):
         score += 1
 
     if score >= 3:
